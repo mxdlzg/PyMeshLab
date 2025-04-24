@@ -1,0 +1,134 @@
+name: BuildAndTest
+
+on:
+  [push, pull_request]
+
+env:
+  QT_VERSION: 5.15.2
+
+jobs:
+  build_pymeshlab:
+    name: Build PyMeshLab
+    runs-on: ubuntu-latest
+    container: quay.io/pypa/manylinux1_x86_64
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    - name: Setup env variables
+      id: envs
+      shell: bash
+      run: |
+        echo "arch=x86_64" >> $GITHUB_OUTPUT
+        echo "build_options=--nightly --ccache" >> $GITHUB_OUTPUT
+        echo "deploy_options=" >> $GITHUB_OUTPUT
+    - name: Install Qt
+      run: |
+        yum install -y qt5-qtbase-devel
+    - name: Setup Python 3.10
+      run: |
+        # Python 3.10 is already available in manylinux1 container at /opt/python/cp310-cp310
+        export PATH="/opt/python/cp310-cp310/bin:$PATH"
+        ln -sf /opt/python/cp310-cp310/bin/python /usr/local/bin/python3.10
+        ln -sf /opt/python/cp310-cp310/bin/pip /usr/local/bin/pip3.10
+    - name: Install dependencies
+      shell: bash
+      run: |
+        yum install -y epel-release
+        yum install -y ccache gcc-c++ make cmake git
+        /opt/python/cp310-cp310/bin/pip install -U pip
+    - name: Cache external libraries sources
+      id: cache-ext-libs
+      uses: actions/cache@v4
+      with:
+        path: src/meshlab/src/external/downloads/*
+        key: manylinux1-x86_64-external-libraries
+    - name: Ccache
+      uses: hendrikmuhs/ccache-action@v1.2
+      with:
+        key: manylinux1-x86_64-${{ github.ref }}
+    - name: Build PyMeshLab 3.10
+      run: |
+        export PATH="/opt/python/cp310-cp310/bin:$PATH"
+        sh scripts/Linux/1_build.sh ${{ steps.envs.outputs.build_options }}
+    - name: Deploy PyMeshLab 3.10
+      run: |
+        export PATH="/opt/python/cp310-cp310/bin:$PATH"
+        sh scripts/Linux/2_deploy.sh ${{ steps.envs.outputs.deploy_options }}
+    - name: Upload PyMeshLab_manylinux1_x86_64_python3.10
+      uses: actions/upload-artifact@v4
+      with:
+        name: PyMeshLab_manylinux1_x86_64_python3.10
+        path: pymeshlab
+
+  build_wheel:
+    name: Build PyMeshLab Wheel
+    runs-on: ubuntu-latest
+    container: quay.io/pypa/manylinux1_x86_64
+    needs: build_pymeshlab
+    steps:
+    - uses: actions/checkout@v4
+    - name: Setup env variables
+      id: envs
+      shell: bash
+      run: |
+        echo "arch=x86_64" >> $GITHUB_OUTPUT
+    - name: Download PyMeshLab_manylinux1_x86_64_python3.10
+      uses: actions/download-artifact@v4
+      with:
+        name: PyMeshLab_manylinux1_x86_64_python3.10
+        path: pymeshlab/
+    - name: Setup Python 3.10
+      run: |
+        # Use Python 3.10 from manylinux1
+        export PATH="/opt/python/cp310-cp310/bin:$PATH"
+    - name: Build Wheel
+      shell: bash
+      run: |
+        export PATH="/opt/python/cp310-cp310/bin:$PATH"
+        VER=$(date +%Y.%m.%d)
+        echo "${VER}.dev0" | tr -d '\n'> PYML_VERSION
+        /opt/python/cp310-cp310/bin/pip install wheel
+        /opt/python/cp310-cp310/bin/pip wheel . -w wheels/
+        # Use auditwheel to make the wheel manylinux1 compatible
+        /opt/python/cp310-cp310/bin/pip install auditwheel
+        /opt/python/cp310-cp310/bin/auditwheel repair wheels/pymeshlab*.whl -w manylinux_wheels/
+    - name: Upload wheel manylinux1_x86_64_python3.10
+      uses: actions/upload-artifact@v4
+      with:
+        name: pymeshlab_whl_manylinux1_x86_64_python3.10
+        path: manylinux_wheels/pymeshlab*.whl
+
+  test_wheel:
+    name: Test Wheel
+    needs: build_wheel
+    runs-on: ubuntu-latest
+    container: quay.io/pypa/manylinux1_x86_64
+    steps:
+    - name: Setup env variables
+      id: envs
+      shell: bash
+      run: |
+        echo "arch=x86_64" >> $GITHUB_OUTPUT
+    - name: Download pymeshlab_whl_manylinux1_x86_64_python3.10
+      uses: actions/download-artifact@v4
+      with:
+        name: pymeshlab_whl_manylinux1_x86_64_python3.10
+        path: .
+    - name: Setup Python 3.10
+      run: |
+        export PATH="/opt/python/cp310-cp310/bin:$PATH"
+    - name: Install wheel and dependencies
+      shell: bash
+      run: |
+        export PATH="/opt/python/cp310-cp310/bin:$PATH"
+        /opt/python/cp310-cp310/bin/pip install pytest numpy
+        /opt/python/cp310-cp310/bin/pip install pymeshlab*.whl
+    - name: Install linux dependencies
+      run: |
+        yum install -y mesa-libGL
+    - name: Run tests
+      run: |
+        export PATH="/opt/python/cp310-cp310/bin:$PATH"
+        export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/opt/python/cp310-cp310/lib
+        /opt/python/cp310-cp310/bin/pytest --pyargs pymeshlab -m "not glcontext"
