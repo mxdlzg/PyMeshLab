@@ -40,29 +40,6 @@ jobs:
       with:
         path: src/meshlab/src/external/downloads/*
         key: Linux-external-libraries
-        
-    - name: Patch E57Format header
-      run: |
-        # Create patches directory if it doesn't exist
-        mkdir -p patches
-        
-        # Create patch file for E57Format.h
-        cat > patches/e57format.patch << 'EOF'
-        --- E57Format.h.orig
-        +++ E57Format.h
-        @@ -29,6 +29,7 @@
-         #include <exception>
-         #include <iostream>
-         #include <string>
-        +#include <cstdint>
-         #include <vector>
-         
-         #ifdef E57_REFIMPL
-        EOF
-        
-        # Find the E57Format.h file in the repository and apply the patch
-        find src -name "E57Format.h" -exec sh -c 'cp {} {}.orig && patch {} < patches/e57format.patch' \;
-    
     - name: Ccache
       uses: hendrikmuhs/ccache-action@v1.2
       with:
@@ -85,7 +62,7 @@ jobs:
     needs: build_pymeshlab
     container: quay.io/pypa/manylinux2014_x86_64
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v3
     - name: Download PyMeshLab_Linux_x86_64_python3.10
       uses: actions/download-artifact@v4
       with:
