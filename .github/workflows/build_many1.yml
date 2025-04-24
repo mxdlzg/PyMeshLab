@@ -64,7 +64,6 @@ jobs:
     env:
       ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true # 添加到这里
     steps:
-    - uses: actions/checkout@v3
     - name: Replace node20 with node16 (Local Test Only!)
       if: runner.os == 'Linux'  # 仅在 Linux runner 上运行
       shell: bash
@@ -75,6 +74,7 @@ jobs:
         sudo -E bash -c "cd $RUNNER_HOME/actions-runner/externals && \
           mv node20 node20.bak && \
           ln -s node16 node20"
+    - uses: actions/checkout@v3
     - name: Download PyMeshLab_Linux_x86_64_python3.10
       uses: actions/download-artifact@v4
       with:
