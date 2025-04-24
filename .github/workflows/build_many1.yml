@@ -1,17 +1,18 @@
-name: Build1
+name: BuildAndTest
 
 on:
-  workflow_dispatch:
+  [push, pull_request]
 
 env:
   QT_VERSION: 5.15.2
 
 jobs:
-  build_pymeshlab:
-    name: Build PyMeshLab
+  build_manylinux2014_wheel:
+    name: Build manylinux2014 Python 3.10 Wheel
     runs-on: ubuntu-latest
+    container: quay.io/pypa/manylinux2014_x86_64
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v2
       with:
         submodules: recursive
     - name: Setup env variables
@@ -21,63 +22,72 @@ jobs:
         echo "arch=x86_64" >> $GITHUB_OUTPUT
         echo "build_options=--nightly --ccache" >> $GITHUB_OUTPUT
         echo "deploy_options=" >> $GITHUB_OUTPUT
-    - name: Set up Python 3.10
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.10'
-    - name: Install Qt
-      uses: jurplel/install-qt-action@v3
-      with:
-        cache: true
-        version: ${{ env.QT_VERSION }}
-    - name: Install dependencies
-      shell: bash
+    
+    - name: Install system dependencies
       run: |
-        sh scripts/Linux/0_setup_env.sh
+        yum install -y epel-release
+        yum install -y ccache gcc-c++ make cmake git
+        yum install -y mesa-libGL-devel
+        yum install -y qt5-qtbase-devel
+    
+    - name: Setup Python 3.10
+      run: |
+        # Use Python 3.10 from manylinux2014
+        export PATH="/opt/python/cp310-cp310/bin:$PATH"
+        /opt/python/cp310-cp310/bin/pip install -U pip
+    
     - name: Cache external libraries sources
       id: cache-ext-libs
-      uses: actions/cache@v4
+      uses: actions/cache@v2
       with:
         path: src/meshlab/src/external/downloads/*
-        key: Linux-external-libraries
+        key: manylinux2014-x86_64-external-libraries
+    
+    - name: Patch E57Format header
+      run: |
+        # Create patches directory if it doesn't exist
+        mkdir -p patches
+        
+        # Create patch file for E57Format.h
+        cat > patches/e57format.patch << 'EOF'
+        --- E57Format.h.orig
+        +++ E57Format.h
+        @@ -29,6 +29,7 @@
+         #include <exception>
+         #include <iostream>
+         #include <string>
+        +#include <cstdint>
+         #include <vector>
+         
+         #ifdef E57_REFIMPL
+        EOF
+        
+        # Find the E57Format.h file in the repository and apply the patch
+        find src -name "E57Format.h" -exec sh -c 'cp {} {}.orig && patch {} < patches/e57format.patch' \;
+    
     - name: Ccache
       uses: hendrikmuhs/ccache-action@v1.2
       with:
-        key: Linux-${{ github.ref }}
+        key: manylinux2014-x86_64-${{ github.ref }}
+    
     - name: Build PyMeshLab
       run: |
+        export PATH="/opt/python/cp310-cp310/bin:$PATH"
+        # Create symlinks to Python 3.10 for build scripts to find
+        ln -sf /opt/python/cp310-cp310/bin/python /usr/local/bin/python3.10
+        ln -sf /opt/python/cp310-cp310/bin/pip /usr/local/bin/pip3.10
+        # Ensure scripts can find Python
+        export PYTHONPATH=/opt/python/cp310-cp310/lib/python3.10/site-packages:$PYTHONPATH
         sh scripts/Linux/1_build.sh ${{ steps.envs.outputs.build_options }}
+    
     - name: Deploy PyMeshLab
       run: |
-        sh scripts/Linux/2_deploy.sh ${{ steps.envs.outputs.deploy_options }}
-    - name: Upload PyMeshLab_Linux_x86_64_python3.10
-      uses: actions/upload-artifact@v4
-      with:
-        name: PyMeshLab_Linux_x86_64_python3.10
-        path: pymeshlab
-
-  build_manylinux_wheel:
-    name: Build manylinux2014 Wheel
-    runs-on: ubuntu-latest
-    needs: build_pymeshlab
-    container: quay.io/pypa/manylinux2014_x86_64
-    steps:
-    - uses: actions/checkout@v4
-    - name: Download PyMeshLab_Linux_x86_64_python3.10
-      uses: actions/download-artifact@v4
-      with:
-        name: PyMeshLab_Linux_x86_64_python3.10
-        path: pymeshlab/
-    - name: Setup Python 3.10
-      run: |
-        # Use Python 3.10 from manylinux2014 container
         export PATH="/opt/python/cp310-cp310/bin:$PATH"
-        alias python="/opt/python/cp310-cp310/bin/python"
-        alias pip="/opt/python/cp310-cp310/bin/pip"
+        sh scripts/Linux/2_deploy.sh ${{ steps.envs.outputs.deploy_options }}
+    
     - name: Build manylinux2014 Wheel
       shell: bash
       run: |
-        # Set up Python 3.10
         export PATH="/opt/python/cp310-cp310/bin:$PATH"
         
         # Create version file
@@ -91,6 +101,7 @@ jobs:
         # Use auditwheel to make the wheel manylinux2014 compatible
         /opt/python/cp310-cp310/bin/pip install auditwheel
         /opt/python/cp310-cp310/bin/auditwheel repair wheels/pymeshlab*.whl -w manylinux_wheels/
+    
     - name: Upload manylinux2014_x86_64_python3.10 wheel
       uses: actions/upload-artifact@v4
       with:
@@ -100,7 +111,7 @@ jobs:
   test_manylinux_wheel:
     name: Test manylinux2014 Wheel
     runs-on: ubuntu-latest
-    needs: build_manylinux_wheel
+    needs: build_manylinux2014_wheel
     container: quay.io/pypa/manylinux2014_x86_64
     steps:
     - name: Download pymeshlab_whl_manylinux2014_x86_64_python3.10
@@ -108,7 +119,8 @@ jobs:
       with:
         name: pymeshlab_whl_manylinux2014_x86_64_python3.10
         path: .
-    - name: Install wheel and dependencies
+    
+    - name: Install wheel and test dependencies
       shell: bash
       run: |
         # Set up Python 3.10
@@ -120,6 +132,7 @@ jobs:
         
         # Install required system libraries
         yum install -y mesa-libGL
+    
     - name: Run tests
       run: |
         export PATH="/opt/python/cp310-cp310/bin:$PATH"
