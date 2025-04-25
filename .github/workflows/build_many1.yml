@@ -44,6 +44,22 @@ jobs:
       uses: hendrikmuhs/ccache-action@v1.2
       with:
         key: Linux-${{ github.ref }}
+    - name: Check Python Environment Before Build
+      shell: bash
+      run: |
+        echo "--- Python location ---"
+        which python
+        echo "--- Python version ---"
+        python --version
+        echo "--- Pip location ---"
+        which pip
+        echo "--- Pip version ---"
+        pip --version
+        echo "--- PATH environment variable ---"
+        echo $PATH
+        echo "--- Checking for python3.11 ---"
+        which python3.11 || echo "python3.11 not found in PATH"
+        ls -l /usr/bin/python* || echo "Could not list /usr/bin/python*"
     - name: Build PyMeshLab
       run: |
         sh scripts/Linux/1_build.sh ${{ steps.envs.outputs.build_options }}
