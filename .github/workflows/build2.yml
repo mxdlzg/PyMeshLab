@@ -1,0 +1,230 @@
+name: BuildAndTest
+
+on:
+  workflow_dispatch:
+
+env:
+  QT_VERSION: 5.15.2
+
+jobs:
+  build_pymeshlab: # 这个 Job 现在在容器内编译
+    name: Build PyMeshLab (within manylinux2014)
+    runs-on: ubuntu-latest # Runner host 仍然是 ubuntu
+    container: quay.io/pypa/manylinux2014_x86_64 # <--- 指定容器！
+
+    env:
+      QT_VERSION: 5.15.2
+      # 设置容器内 Python 路径（方便后面使用）
+      PYTHON_BIN_PATH: /opt/python/cp310-cp310/bin
+      QT_INSTALL_PATH: /opt/Qt # Qt 将被安装到这里
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Setup env variables # 这个可以在 host 上运行没问题
+      id: envs
+      shell: bash
+      run: |
+        echo "arch=x86_64" >> $GITHUB_OUTPUT
+        echo "build_options=--nightly --ccache" >> $GITHUB_OUTPUT # Ccache 选项可能需要调整或移除，下面解释
+        echo "deploy_options=" >> $GITHUB_OUTPUT
+
+    # --- 容器内步骤开始 ---
+
+- name: Install build dependencies inside container
+      shell: bash # 明确指定 shell
+      run: |
+        echo "=== Installing Build Dependencies in CentOS 7 ==="
+        yum update -y
+        yum install -y epel-release # 启用 EPEL 源，很多开发包需要它
+
+        # 安装基础开发工具集 (包含 gcc, g++, make 等)
+        yum groupinstall -y "Development Tools"
+
+        # 安装 CMake 和 wget (aqtinstall 可能需要)
+        yum install -y cmake wget
+
+        # 安装 PyMeshLab 的其他 C++ 依赖 (基于 0_setup_env.sh)
+        echo "Installing PyMeshLab core dependencies..."
+        yum install -y \
+          mesa-libGL-devel \
+          mesa-libGLU-devel \
+          fuse-libs \
+          gmp-devel \
+          mpfr-devel \
+          xerces-c-devel \
+          ninja-build \
+          patchelf \
+          tbb-devel \
+          zlib-devel # zlib 也是常见依赖，最好加上
+
+        # 安装 Qt 需要的 X11/XCB 开发库
+        echo "Installing Qt X11/XCB dependencies..."
+        yum install -y \
+          libxkbcommon-x11-devel \
+          xcb-util-wm-devel \
+          xcb-util-image-devel \
+          xcb-util-keysyms-devel \
+          xcb-util-renderutil-devel \
+          libXinerama-devel # 尝试安装 Xinerama
+
+        echo "=== Installing Python tools ==="
+        # 使用容器内的 Python 3.10 pip
+        "${PYTHON_BIN_PATH}/pip" install --upgrade pip
+        # 安装 aqtinstall 用于安装 Qt
+        "${PYTHON_BIN_PATH}/pip" install aqtinstall
+
+        echo "=== Installing Qt using aqtinstall ==="
+        # 使用 aqtinstall 安装 Qt 到容器内的指定路径
+        # 注意：确保网络连接允许从 download.qt.io 下载
+        "${PYTHON_BIN_PATH}/python" -m aqt install-qt linux desktop "${QT_VERSION}" linux_x64 --outputdir "${QT_INSTALL_PATH}" --internal
+
+        # 验证 Qt 安装 (可选)
+        ls -l "${QT_INSTALL_PATH}/${QT_VERSION}/gcc_64/bin" || echo "Qt installation directory not found as expected."
+
+        echo "=== Dependency Installation Complete ==="
+
+    - name: Set Environment Variables for Build
+      shell: bash
+      run: |
+        echo "Setting up environment..."
+        # 将容器内 Python 添加到 GITHUB_PATH
+        echo "${PYTHON_BIN_PATH}" >> $GITHUB_PATH
+
+        # 将安装的 Qt bin 目录添加到 GITHUB_PATH
+        echo "${QT_INSTALL_PATH}/${QT_VERSION}/gcc_64/bin" >> $GITHUB_PATH
+
+        # 设置 CMake Prefix Path，让 CMake 找到 Qt
+        echo "CMAKE_PREFIX_PATH=${QT_INSTALL_PATH}/${QT_VERSION}/gcc_64" >> $GITHUB_ENV
+
+        # 设置 CCACHE (如果仍要使用)
+        # CCACHE 在容器内使用可能复杂，需要挂载缓存目录或接受容器内的临时缓存
+        # 考虑暂时禁用 build_options 中的 --ccache
+        # 如果要用，可能需要 yum install ccache 并配置 CCACHE_DIR
+        # echo "Using temporary CCACHE in container"
+        # yum install -y ccache
+        # echo "CCACHE_DIR=/tmp/ccache" >> $GITHUB_ENV
+        # mkdir -p /tmp/ccache
+
+    # 移除 Host 上的 Cache external libraries (在容器内缓存较复杂)
+    # - name: Cache external libraries sources ...
+
+    # 移除 Host 上的 Ccache Action (因为 Ccache 配置已移入容器)
+    # - name: Ccache ...
+
+    - name: Check Python Environment Before Build
+      shell: bash
+      run: |
+        echo "--- Python location ---"
+        which python
+        echo "--- Python version ---"
+        python --version
+        echo "--- Pip location ---"
+        which pip
+        echo "--- Pip version ---"
+        pip --version
+        echo "--- PATH environment variable ---"
+        echo $PATH
+        echo "--- CMAKE_PREFIX_PATH ---"
+        echo $CMAKE_PREFIX_PATH
+        echo "--- Checking for system python3.11 ---"
+        # 容器内通常没有系统级的 python3.11
+        which python3.11 || echo "python3.11 not found in PATH"
+        ls -l /usr/bin/python* || echo "Could not list /usr/bin/python*"
+
+    - name: Build PyMeshLab
+      shell: bash
+      # 注意：从 steps.envs.outputs.build_options 中移除了 --ccache，
+      # 因为容器内的 Ccache 设置方式不同，且为简化已注释掉。如果需要，请恢复并正确设置。
+      run: |
+        echo "Running build script..."
+        # 使用移除了 --ccache 的选项，或者根据上面的 CCACHE 设置调整
+        sh scripts/Linux/1_build.sh --nightly
+
+    - name: Deploy PyMeshLab
+      shell: bash
+      run: |
+        echo "Running deploy script..."
+        sh scripts/Linux/2_deploy.sh ${{ steps.envs.outputs.deploy_options }}
+
+    - name: Upload PyMeshLab built in manylinux2014
+      uses: actions/upload-artifact@v4
+      with:
+        # 可以更新名称以反映它是在 manylinux 环境下构建的
+        name: PyMeshLab_manylinux2014_x86_64_python3.10
+        # path 仍然是 pymeshlab 目录，包含了 deploy 后的结果
+        path: pymeshlab
+
+  build_manylinux_wheel:
+    name: Build manylinux2014 Wheel
+    runs-on: ubuntu-latest
+    needs: build_pymeshlab
+    container: quay.io/pypa/manylinux_2_17_x86_64
+    env:
+      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true # 添加到这里
+    steps:
+    - uses: actions/checkout@v3
+    - name: Download PyMeshLab_manylinux2014_x86_64_python3.10
+      uses: actions/download-artifact@v4
+      with:
+        name: PyMeshLab_manylinux2014_x86_64_python3.10
+        path: pymeshlab/
+    - name: Setup Python 3.10
+      run: |
+        # Use Python 3.10 from manylinux2014 container
+        export PATH="/opt/python/cp310-cp310/bin:$PATH"
+        alias python="/opt/python/cp310-cp310/bin/python"
+        alias pip="/opt/python/cp310-cp310/bin/pip"
+    - name: Build manylinux2014 Wheel
+      shell: bash
+      run: |
+        # Set up Python 3.10
+        export PATH="/opt/python/cp310-cp310/bin:$PATH"
+        
+        # Create version file
+        VER=$(date +%Y.%m.%d)
+        echo "${VER}.dev0" | tr -d '\n'> PYML_VERSION
+        
+        # Build wheel
+        /opt/python/cp310-cp310/bin/pip install wheel
+        /opt/python/cp310-cp310/bin/pip wheel . -w wheels/
+        
+        # Use auditwheel to make the wheel manylinux2014 compatible
+        /opt/python/cp310-cp310/bin/pip install auditwheel
+        /opt/python/cp310-cp310/bin/auditwheel repair wheels/pymeshlab*.whl -w manylinux_wheels/
+    - name: Upload manylinux2_17_python3.10 wheel
+      uses: actions/upload-artifact@v4
+      with:
+        name: pymeshlab_whl_manylinux2_17_python3.10
+        path: manylinux_wheels/pymeshlab*.whl
+
+  test_manylinux_wheel:
+    name: Test manylinux2014 Wheel
+    runs-on: ubuntu-latest
+    needs: build_manylinux_wheel
+    container: quay.io/pypa/manylinux_2_17_x86_64
+    steps:
+    - name: Download pymeshlab_whl_manylinux2_17_python3.10
+      uses: actions/download-artifact@v4
+      with:
+        name: pymeshlab_whl_manylinux2_17_python3.10
+        path: .
+    - name: Install wheel and dependencies
+      shell: bash
+      run: |
+        # Set up Python 3.10
+        export PATH="/opt/python/cp310-cp310/bin:$PATH"
+        
+        # Install dependencies & wheel
+        /opt/python/cp310-cp310/bin/pip install pytest numpy
+        /opt/python/cp310-cp310/bin/pip install pymeshlab*.whl
+        
+        # Install required system libraries
+        yum install -y mesa-libGL
+    - name: Run tests
+      run: |
+        export PATH="/opt/python/cp310-cp310/bin:$PATH"
+        export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/opt/python/cp310-cp310/lib
+        /opt/python/cp310-cp310/bin/pytest --pyargs pymeshlab -m "not glcontext"
