@@ -1,4 +1,4 @@
-name: BuildAndTest
+name: BuildAndTest22
 
 on:
   workflow_dispatch:
