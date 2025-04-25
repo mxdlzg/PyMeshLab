@@ -33,7 +33,7 @@ jobs:
 
     # --- 容器内步骤开始 ---
 
-- name: Install build dependencies inside container
+    - name: Install build dependencies inside container
       shell: bash # 明确指定 shell
       run: |
         echo "=== Installing Build Dependencies in CentOS 7 ==="
